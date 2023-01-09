@@ -9,69 +9,59 @@
 
 词符（token）使用 `javascript` 语言的正则表达式表达，且文档里从上到下先定义的词法有更高的优先级。使用带状态转移的词法描述。初始状态为 default mode，即一个源码文件第 0 个字符的初始状态。
 
-#### default mode（包含 expression mode）
+#### default mode
 
 ```
-MACRO_BEGIN : ###  // 跳转 Macro Mode
-MACRO_ECHO : #{    // 跳转 Macro Mode
-
 KEYWORD :（完整的关键字列表见下文）
-
-...(expression mode)
-```
-
-#### expression mode
-
-```
-TEMPLATE_STRING_BEGIN : ` // 跳转 template string mode
 OPERATOR :（完整的符号列表见下文）
-ID : [a-zA-Z]([a-zA-Z0-9_])*
+ID : [a-zA-Z$]([a-zA-Z0-9$_])*
 NUMBER : INT | FLOAT
-INT : [+-]?[0-9]+
-FLOAT: [+-]?(([0-9]+(\.[0-9]*)?) | (\.[0-9]+))(e[+-]?[0-9]+)?
+INT : [0-9]+
+FLOAT: (([0-9]+(\.[0-9]*)?) | (\.[0-9]+))(e[+-]?[0-9]+)?
 BOOL : true | false
-
-STRING : SINGLE_QUOTE_STRING | DOUBLE_QUOTE_STRING 
-SINGLE_QUOTE_STRING : '[^']*'
-DOUBLE_QUOTE_STRING : "[^"]*"
-
+STRING_QUOTE: ' | "
 COMMENT : SINGLE_LINE_COMMENT | MULTI_LINE_COMMENT
 SINGLE_LINE_COMMENT : \/\/[^\n]*
 MULTI_LINE_COMMENT : \/\*.*\*\/
 ```
 
-#### template-string mode
+该模式下，遇到 STRING_QUOTE，跳转到 string mode
+
+#### string mode
 
 ```
-EXPRESSION_BEGIN : ${      // 跳转到 template string expression mode
-TEMPLATE_STRING_END : `    // 跳转到 default mode
-TEMPLATE_STRING_CHARS : .*
+EXPRESSION_START : ${
+STRING_QUOTE : ' | " 
+STRING : .*
 ```
 
-#### template-string-expression mode
+该模式下：
+
+* 遇到 EXPRESSION_START，跳到 string-expression mode
+* 遇到 STRING_QUOTE，结束 string mode，回到 default mode
+
+#### string-expression mode
 
 ```
-...(expression mode)
-
-EXPRESSION_END : }   // 跳转到 template string mode
+EXPRESSION_END : }
+STRING_QUOTE: ' | "
+...(default mode)
 ```
 
-#### macro mode
+该模式下：
 
-```
-进入 macro mode 后，开启宏语言代码，使用 Geekabe Macro Language 的词法
-从宏语言模式退出后，重新进入 default mode。
-```
+* 遇到 STRING_QUOTE，跳到 string mode（递归进入）
+* 遇到 EXPRESSION_END，结束 string-expression mode，回到 string mode
 
 ### 关键字 & 符号
 
 关键字：
 
-`if` `loop` `var` `import` `as` `export` `proto` `fn` `return` `u8` `u16` `u32` `u64` `uint` `int` `i8` `i16` `i32` `i64` `bool` `str`
+`if` `loop` `of` `var` `use` `pub` `inner` `private` `fn` `return` `u8` `u16` `u32` `u64` `uint` `int` `i8` `i16` `i32` `i64` `bool` `str` `type` `partial`
 
 符号：
 
-`>=` `<=` `==` `>>` `>` `<<` `<` `=` `^` `+` `-` `*` `/` `%` `[` `]`
+`>=` `<=` `==` `>>` `<<` `##` ``` `` ``` `#{` `${` `}` `:` `(` `)` `_` `.` `>` `<` `=` `+` `-` `*` `/` `%` `[` `]`
 
 ## 文法
 
@@ -96,15 +86,15 @@ EXPRESSION_END : }   // 跳转到 template string mode
 #   注释（用于解释文法规则，仅支持单行注释）
 ```
 
-### Body
+### Source
 
-代码的存储单元是文件，每一个文件内容的整体，定义为 `Body`。
+代码的存储单元是文件，每一个文件内容的整体，定义为 `Source` 节点。
+
 ```
 # imports 语句必须整体放在文件顶部。
-Body = ImportStmt* (Block | StmtList | ExportStmt) ;
-ExportStmt = export DeclStmt ;
-Block = '{' StmtList '}' ;
-StmtList = (Stmt | Block)*;
+Source = ImportStmt* StmtList? ;
+Block = '{' StmtList? '}' ;
+StmtList = Block | Stmt;
 ```
 ### ImportStmt
 
@@ -137,9 +127,9 @@ SwitchStmt = switch Expr '{' (case Expr ':' Block (continue)? )* (default ':' Bl
 
 ```
 LoopStmt = loop (LoopRange | LoopIter | LoopIf )? Block ;
-LoopCondRange = ID ':' NUM ( (',' NUM)) | (',' NUM ',' NUM) );
-LoopCondIter = ID (',' ID)? in Expr ;
-LoopCondIf = if Expr ;
+LoopRange = ID of Expr? '..' Expr;
+LoopIter = ID of Expr;
+LoopIf = if Expr ;
 ```
 
 循环语句涵盖了传统语句的 `for`, `while`, `do` 等表达式。
@@ -151,25 +141,30 @@ LoopCondIf = if Expr ;
 // 等价于 c 等语言的 do while true，可通过 break 退出
 loop {}
 
-// 范围循环，等价于 c 等语言的 for
-// loop 后面是参数名，紧跟冒号代表范围循环
-// 冒号后面 3 个参数，分别代表终值、初始值（默认为 0）、步进值（默认为 1）
-loop i: 10 {}
-loop i: 10, 1 {}
-loop i: 10, 2, 2 {}
+// .. 符号代表循环某个范围，.. 符号两边必须是整数类型。
+// .. 左边整数代表循环的起始数字（包含该数字），可省略，默认为 0
+// .. 右边的整数代表循环的终止数字（包含该数字）。
+// 以下代码等价于 c 语言中的 for (int n = 0; n <= 10; n++)
+loop n of ..10 {}
+loop n of 0..10 {}
 
-// 迭代循环，等价于 js 语言的 for of，注意不是 js 的 for in
-// loop 后是参数名，紧跟 in 关键字，其后是待遍历的数组
-var arr = #{array_util.fill(10)};
-loop n in arr {
+// 以下代码等价于 c 语言中的 for (int n = 2; n <= 10; n++)
+loop n of 2..10 {}
+
+// 第二个 .. 符号代表循环的步进值，以下代码等价于 c 语言中的 for (int n = 2; n <= 10; n+=2)
+loop n of 2..10..2 {}
+
+// of 关键字后如果不是 .. 符号代表进行范围循环，则必须是一个数组类型的变量，遍历该数组
+var arr = [0, 0, 0, 0];
+loop n of arr {
   log(n);
 }
 // 参数后还可以再跟一个索引参数
-loop n, i in arr {
+loop n, i of arr {
   log(`${n} ${i}`);
 }
 
-// 条件循环，loop 后紧跟 while 关键字，再后面必须是一个 bool 表达式。
+// loop 后紧跟 if 关键字，则可以指定一个 bool 表达式控制循环。
 var i = 0
 loop if i < arr.length {
   log(arr[i])
